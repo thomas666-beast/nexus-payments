@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package nexus.v1;
+
+option go_package = "github.com/thomas666-beast/nexus-payments/gen/nexus/v1;nexusv1";
+
+service Nexus {
+  rpc InitiateTransfer(InitiateTransferRequest) returns (InitiateTransferResponse);
+  rpc GetTransferStatus(GetTransferStatusRequest) returns (GetTransferStatusResponse);
+  rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse);
+}
+
+message Money {
+  int64  amount_minor = 1;
+  string currency     = 2;
+}
+
+message InitiateTransferRequest {
+  string from_account = 1;
+  string to_account   = 2;
+  Money  amount       = 3;
+  string reason       = 4;
+}
+
+message InitiateTransferResponse {
+  string transfer_id  = 1;
+  string status       = 2;
+  Money  amount       = 3;
+  string from_account = 4;
+  string to_account   = 5;
+  repeated string entry_ids = 6;
+}
+
+message GetTransferStatusRequest {
+  string transfer_id = 1;
+}
+
+message GetTransferStatusResponse {
+  string transfer_id  = 1;
+  string status       = 2;
+  string reason       = 3;
+  Money  amount       = 4;
+  string from_account = 5;
+  string to_account   = 6;
+}
+
+message GetBalanceRequest {
+  string account_id = 1;
+}
+
+message GetBalanceResponse {
+  Money balance = 1;
+}
