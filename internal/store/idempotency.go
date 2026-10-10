@@ -149,3 +149,16 @@ func (r *IdempotencyRepo) DeleteExpired(ctx context.Context, tx pgx.Tx) (int64, 
 	}
 	return ct.RowsAffected(), nil
 }
+
+// DeleteStaleInProgress removes IN_PROGRESS records older than olderThan.
+// Returns the number of rows deleted.
+func (r *IdempotencyRepo) DeleteStaleInProgress(ctx context.Context, tx pgx.Tx, olderThan time.Duration) (int64, error) {
+	ct, err := tx.Exec(ctx, `
+		DELETE FROM idempotency_keys
+		WHERE status = 'IN_PROGRESS' AND created_at < NOW() - $1::interval
+	`, fmt.Sprintf("%d seconds", int(olderThan.Seconds())))
+	if err != nil {
+		return 0, fmt.Errorf("delete stale in-progress: %w", err)
+	}
+	return ct.RowsAffected(), nil
+}

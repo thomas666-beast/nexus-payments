@@ -53,6 +53,8 @@ func run() error {
 	eng := ledger.New(nil)
 	reg := adapter.NewRegistry()
 	svc := service.New(db, eng, reg, service.DefaultConfig(), log, m)
+	reaper := service.NewReaper(db, service.DefaultReaperConfig(), log)
+	go reaper.Run(ctx)
 
 	// gRPC server
 	grpcLis, err := net.Listen("tcp", grpcAddr)
