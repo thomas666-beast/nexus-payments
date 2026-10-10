@@ -54,61 +54,50 @@ func New(db *store.DB, engine *ledger.Engine, cfg Config, log *slog.Logger) *Ser
 }
 
 // Execute runs a transfer end-to-end. It is safe for concurrent use.
-func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (ExecuteResult, error) {
+func (s *Service) executeOnce(ctx context.Context, req ExecuteRequest) (ExecuteResult, error) {
 	if err := s.validate(req); err != nil {
 		return ExecuteResult{}, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, s.cfg.TransferTimeout)
-	defer cancel()
-
-	// Generate the transfer ID ONCE. Retries reuse it.
-	now := s.now().UTC()
-	tx := domain.Transfer{
-		ID:          domain.NewTransferID(),
-		FromAccount: req.FromAccount,
-		ToAccount:   req.ToAccount,
-		Amount:      req.Amount,
-		Status:      domain.TransferStatusInitiated,
-		Reason:      req.Reason,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+	// Fast path: no idempotency key → run without coordination.
+	if req.IdempotencyKey == "" {
+		return s.executeOnce(ctx, req)
 	}
 
-	var lastErr error
-	backoff := s.cfg.RetryBackoff
-
-	for attempt := 0; attempt <= s.cfg.MaxRetries; attempt++ {
-		if attempt > 0 {
-			jitter := time.Duration(rand.Int63n(int64(backoff)))
-			wait := backoff + jitter
-			s.log.Warn("retrying transfer",
-				"transfer_id", tx.ID,
-				"attempt", attempt,
-				"wait", wait,
-				"err", lastErr,
-			)
-			select {
-			case <-ctx.Done():
-				return ExecuteResult{}, ctx.Err()
-			case <-time.After(wait):
-			}
-			backoff *= 2
-		}
-
-		res, err := s.attempt(ctx, tx)
-		if err == nil {
-			return res, nil
-		}
-		if !store.IsRetryable(err) {
-			return ExecuteResult{}, err
-		}
-		lastErr = err
+	// Idempotent path.
+	reqHash, err := hashRequest(req)
+	if err != nil {
+		return ExecuteResult{}, fmt.Errorf("hash request: %w", err)
 	}
 
-	return ExecuteResult{}, fmt.Errorf("%w: %v", ErrRetriesExhausted, lastErr)
+	// Phase 1: try to acquire the key.
+	existing, acquired, err := s.acquireKey(ctx, req.IdempotencyKey, reqHash)
+	if err != nil {
+		return ExecuteResult{}, err
+	}
+	if !acquired {
+		return s.replayExisting(existing, reqHash)
+	}
+
+	// Phase 2: we own the key. Run the transfer, then complete or fail.
+	res, execErr := s.executeOnce(ctx, req)
+	if execErr != nil {
+		// Record the failure. If recording fails, log and still return the
+		// business error — the caller's request did fail.
+		if recordErr := s.failKey(ctx, req.IdempotencyKey, execErr); recordErr != nil {
+			s.log.Error("failed to record idempotency failure",
+				"key", req.IdempotencyKey, "err", recordErr)
+		}
+		return ExecuteResult{}, execErr
+	}
+
+	if err := s.completeKey(ctx, req.IdempotencyKey, res); err != nil {
+		s.log.Error("failed to record idempotency completion",
+			"key", req.IdempotencyKey, "err", err)
+		// Transfer succeeded. Return it; the key will expire.
+	}
+	return res, nil
 }
-
 // validate checks request shape before touching the database.
 func (s *Service) validate(req ExecuteRequest) error {
 	if req.FromAccount == "" || req.ToAccount == "" {
@@ -265,4 +254,87 @@ func orderAccountIDs(a, b domain.AccountID) (domain.AccountID, domain.AccountID)
 		return a, b
 	}
 	return b, a
+}
+
+// acquireKey tries to take ownership of the idempotency key.
+// Returns (existingRecord, false, nil) if the key was already held,
+// or (newRecord, true, nil) if we now own it.
+func (s *Service) acquireKey(ctx context.Context, key, reqHash string) (store.IdempotencyRecord, bool, error) {
+	repo := store.NewIdempotencyRepo(s.db)
+	now := s.now().UTC()
+	expires := now.Add(24 * time.Hour)
+
+	var rec store.IdempotencyRecord
+	var acquired bool
+	err := s.db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var innerErr error
+		rec, acquired, innerErr = repo.TryAcquire(ctx, tx, key, reqHash, now, expires)
+		return innerErr
+	})
+	if err != nil {
+		return store.IdempotencyRecord{}, false, err
+	}
+	return rec, acquired, nil
+}
+
+// replayExisting returns the stored result for an existing key, or an
+// appropriate error if the request hash differs or the previous call is
+// still in progress.
+func (s *Service) replayExisting(rec store.IdempotencyRecord, reqHash string) (ExecuteResult, error) {
+	if rec.RequestHash != reqHash {
+		return ExecuteResult{}, fmt.Errorf("%w: key=%s", ErrIdempotencyConflict, rec.Key)
+	}
+	switch rec.Status {
+	case store.IdempotencyStatusInProgress:
+		return ExecuteResult{}, fmt.Errorf("%w: key=%s", ErrIdempotencyInProgress, rec.Key)
+	case store.IdempotencyStatusFailed:
+		var se storedError
+		_ = json.Unmarshal(rec.ResponseBody, &se)
+		return ExecuteResult{}, errors.New(se.Message)
+	case store.IdempotencyStatusCompleted:
+		return s.decodeResult(rec.ResponseBody)
+	}
+	return ExecuteResult{}, fmt.Errorf("unknown idempotency status: %s", rec.Status)
+}
+
+func (s *Service) completeKey(ctx context.Context, key string, res ExecuteResult) error {
+	body, err := encodeResult(res)
+	if err != nil {
+		return err
+	}
+	repo := store.NewIdempotencyRepo(s.db)
+	return s.db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return repo.Complete(ctx, tx, key, body, 200)
+	})
+}
+
+func (s *Service) failKey(ctx context.Context, key string, execErr error) error {
+	body, err := encodeError(execErr)
+	if err != nil {
+		return err
+	}
+	repo := store.NewIdempotencyRepo(s.db)
+	return s.db.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return repo.Fail(ctx, tx, key, body, 400)
+	})
+}
+
+func (s *Service) decodeResult(body []byte) (ExecuteResult, error) {
+	var sr storedResult
+	if err := json.Unmarshal(body, &sr); err != nil {
+		return ExecuteResult{}, fmt.Errorf("decode stored result: %w", err)
+	}
+	res := ExecuteResult{
+		Transfer: domain.Transfer{
+			ID:          sr.TransferID,
+			FromAccount: sr.FromAccount,
+			ToAccount:   sr.ToAccount,
+			Amount:      domain.Money{Amount: sr.AmountMinor, Currency: sr.Currency},
+			Status:      domain.TransferStatus(sr.Status),
+		},
+	}
+	for _, id := range sr.EntryIDs {
+		res.Entries = append(res.Entries, domain.LedgerEntry{ID: id})
+	}
+	return res, nil
 }
