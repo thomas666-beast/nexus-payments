@@ -29,7 +29,7 @@ test-unit:
 	go test ./internal/... ./cmd/... -race -count=1
 
 test-integration:
-	go test ./test/integration/... -race -count=1 -tags=integration
+	go test ./internal/store/... ./test/integration/... -race -count=1 -tags=integration
 
 lint:
 	golangci-lint run ./...

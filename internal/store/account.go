@@ -57,13 +57,30 @@ func (r *AccountRepo) GetByBankRef(ctx context.Context, tx pgx.Tx, bankID, exter
 }
 
 // LockForUpdate locks the account row until the transaction ends.
-// Use before reading balance when the caller needs a consistent snapshot.
 func (r *AccountRepo) LockForUpdate(ctx context.Context, tx pgx.Tx, id domain.AccountID) (domain.Account, error) {
 	row := tx.QueryRow(ctx, `
 		SELECT id, bank_id, external_ref, currency, holder, status, created_at, updated_at
 		FROM accounts WHERE id = $1 FOR UPDATE
 	`, id)
 	return scanAccount(row)
+}
+
+// LockAdvisory takes a transaction-scoped advisory lock on the account ID.
+//
+// This is the authoritative serializer for the "read balance, then insert
+// ledger entries" pattern. A row-level FOR UPDATE on accounts is insufficient
+// because inserting new ledger_entries rows isn't covered by any existing
+// accounts row lock. The advisory lock guarantees that no two transactions
+// can concurrently read the same account's balance and then write entries
+// for it.
+//
+// The lock is released automatically when the transaction commits or rolls back.
+func (r *AccountRepo) LockAdvisory(ctx context.Context, tx pgx.Tx, id domain.AccountID) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, string(id))
+	if err != nil {
+		return fmt.Errorf("advisory lock %s: %w", id, err)
+	}
+	return nil
 }
 
 // UpdateStatus changes the account status and bumps updated_at.

@@ -6,20 +6,21 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // TxFunc is the work performed inside a transaction. Return nil to commit;
 // return any error to roll back.
 type TxFunc func(ctx context.Context, tx pgx.Tx) error
 
-// WithTx runs fn inside a serializable transaction. Uses the strongest
-// isolation level because money demands it.
-//
-// Serializable isolation means Postgres will abort the transaction if it
-// can't guarantee serializability. Callers may retry on 40001.
+// WithTx runs fn inside a ReadCommitted transaction. Serializable isolation
+// is deliberately NOT used: concurrent transfers on the same account would
+// abort each other constantly under SSI. Correctness is enforced instead by
+// explicit row locks (SELECT ... FOR UPDATE) acquired in a deterministic
+// order — see Service.attempt.
 func (db *DB) WithTx(ctx context.Context, fn TxFunc) error {
 	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{
-		IsoLevel:   pgx.Serializable,
+		IsoLevel:   pgx.ReadCommitted,
 		AccessMode: pgx.ReadWrite,
 	})
 	if err != nil {
@@ -39,22 +40,24 @@ func (db *DB) WithTx(ctx context.Context, fn TxFunc) error {
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit: %w", err)
+		return err
 	}
 	return nil
 }
 
-// IsRetryable reports whether an error is a transient serialization failure.
+// IsRetryable reports whether an error is a transient failure worth retrying.
 func IsRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
-	// pgx exposes SQLSTATE via pgconn.PgError.
-	var pgErr interface{ SQLState() string }
+	if errors.Is(err, pgx.ErrTxCommitRollback) {
+		return true
+	}
+	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		// 40001 serialization_failure
 		// 40P01 deadlock_detected
-		return pgErr.SQLState() == "40001" || pgErr.SQLState() == "40P01"
+		return pgErr.Code == "40001" || pgErr.Code == "40P01"
 	}
 	return false
 }
