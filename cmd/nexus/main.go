@@ -23,6 +23,7 @@ import (
 	"github.com/thomas666-beast/nexus-payments/internal/transport/health"
 	restserver "github.com/thomas666-beast/nexus-payments/internal/transport/rest"
 	"google.golang.org/grpc"
+	"github.com/thomas666-beast/nexus-payments/internal/platform/ratelimit"
 )
 
 func main() {
@@ -39,6 +40,9 @@ func run() error {
 	grpcAddr := getenv("NEXUS_GRPC_ADDR", ":9090")
 	httpAddr := getenv("NEXUS_HTTP_ADDR", ":8080")
 	metricsAddr := getenv("NEXUS_METRICS_ADDR", ":9100")
+	// Rate limiters: 100 req/s per key, burst 200, LRU cap 50k keys.
+	globalLimiter := ratelimit.New(100, 200, 50_000)
+	writeLimiter := ratelimit.New(10, 20, 50_000)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -52,6 +56,12 @@ func run() error {
 	m := metrics.New(nil)
 	eng := ledger.New(nil)
 	reg := adapter.NewRegistry()
+
+	// For each bank adapter, wrap in a circuit breaker before registering.
+	// In real deployments, adapters are constructed dynamically. For now,
+	// this is the pattern to follow.
+	_ = breaker.DefaultSettings() // documented example
+
 	svc := service.New(db, eng, reg, service.DefaultConfig(), log, m)
 	reaper := service.NewReaper(db, service.DefaultReaperConfig(), log)
 	go reaper.Run(ctx)
@@ -61,12 +71,17 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("grpc listen: %w", err)
 	}
-	grpcSrv := grpc.NewServer()
+	grpcSrv := grpc.NewServer(
+		grpc.UnaryInterceptor(ratelimit.UnaryServerInterceptor(globalLimiter)),
+	)
 	nexusv1.RegisterNexusServer(grpcSrv, grpcserver.NewServer(svc))
 
 	// HTTP server (REST + health)
 	httpMux := http.NewServeMux()
-	httpMux.Handle("/v1/", restserver.NewHandler(svc).Routes(m))
+	restHandler := restserver.NewHandler(svc).Routes(m)
+	limitedREST := ratelimit.HTTPMiddleware(globalLimiter, ratelimit.KeyByIP)(restHandler)
+	httpMux.Handle("/v1/", limitedREST)
+
 	healthH := health.New(db)
 	httpMux.HandleFunc("GET /healthz", healthH.Liveness)
 	httpMux.HandleFunc("GET /readyz", healthH.Readiness)
