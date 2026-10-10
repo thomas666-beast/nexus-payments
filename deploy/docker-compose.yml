@@ -37,17 +37,17 @@ services:
   migrate:
     image: migrate/migrate:v4.17.0
     container_name: nexus-migrate
+    user: "${UID:-1000}:${GID:-1000}"
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - ../migrations:/migrations
-    command:
-      [
-        "-path", "/migrations",
-        "-database", "postgres://nexus:nexus_dev_password@postgres:5432/nexus?sslmode=disable",
-        "up"
-      ]
+    entrypoint:
+      - migrate
+      - -path=/migrations
+      - -database=postgres://nexus:nexus_dev_password@postgres:5432/nexus?sslmode=disable
+    command: ["up"]
     networks:
       - nexus
 
