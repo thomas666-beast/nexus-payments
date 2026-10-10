@@ -88,3 +88,26 @@ func scanTransfer(row pgx.Row) (domain.Transfer, error) {
 	t.Status = domain.TransferStatus(status)
 	return t, nil
 }
+
+// SettledSince returns settled transfer IDs updated in [from, to).
+func (r *TransferRepo) SettledSince(ctx context.Context, tx pgx.Tx, from, to time.Time) ([]domain.TransferID, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id FROM transfers
+		WHERE status = 'SETTLED' AND updated_at >= $1 AND updated_at < $2
+		ORDER BY updated_at
+	`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("query settled: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.TransferID
+	for rows.Next() {
+		var id domain.TransferID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan settled: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

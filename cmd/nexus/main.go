@@ -42,7 +42,7 @@ func run() error {
 	metricsAddr := getenv("NEXUS_METRICS_ADDR", ":9100")
 	// Rate limiters: 100 req/s per key, burst 200, LRU cap 50k keys.
 	globalLimiter := ratelimit.New(100, 200, 50_000)
-	writeLimiter := ratelimit.New(10, 20, 50_000)
+	// writeLimiter := ratelimit.New(10, 20, 50_000)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -56,15 +56,13 @@ func run() error {
 	m := metrics.New(nil)
 	eng := ledger.New(nil)
 	reg := adapter.NewRegistry()
-
-	// For each bank adapter, wrap in a circuit breaker before registering.
-	// In real deployments, adapters are constructed dynamically. For now,
-	// this is the pattern to follow.
-	_ = breaker.DefaultSettings() // documented example
-
 	svc := service.New(db, eng, reg, service.DefaultConfig(), log, m)
+
 	reaper := service.NewReaper(db, service.DefaultReaperConfig(), log)
 	go reaper.Run(ctx)
+
+	reconciler := service.NewReconciler(db, reg, service.DefaultReconcilerConfig(), m, log)
+	go reconciler.Run(ctx)
 
 	// gRPC server
 	grpcLis, err := net.Listen("tcp", grpcAddr)

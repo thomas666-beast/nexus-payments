@@ -13,6 +13,8 @@ type Metrics struct {
 	DBPoolConnections  *prometheus.GaugeVec
 	GRPCRequestsTotal  *prometheus.CounterVec
 	HTTPRequestsTotal  *prometheus.CounterVec
+	ReconcileRuns      *prometheus.CounterVec
+	ReconcileDrift     *prometheus.CounterVec
 }
 
 // New creates and registers metrics on reg. Pass nil for the default registry.
@@ -57,6 +59,16 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "nexus_http_requests_total",
 			Help: "Total HTTP requests by method, path, and status.",
 		}, []string{"method", "path", "status"}),
+
+		ReconcileRuns: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "nexus_reconcile_runs_total",
+			Help: "Reconciliation passes per bank.",
+		}, []string{"bank_id"}),
+
+		ReconcileDrift: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "nexus_reconcile_drift_total",
+			Help: "Drift events by bank and direction.",
+		}, []string{"bank_id", "direction"}),
 	}
 
 	reg.MustRegister(
@@ -67,12 +79,13 @@ func New(reg prometheus.Registerer) *Metrics {
 		m.DBPoolConnections,
 		m.GRPCRequestsTotal,
 		m.HTTPRequestsTotal,
+		m.ReconcileRuns,
+		m.ReconcileDrift,
 	)
 	return m
 }
 
 // NewNoop returns an unregistered Metrics suitable for tests.
-// Nil-safe: callers can pass this everywhere a *Metrics is expected.
 func NewNoop() *Metrics {
 	return &Metrics{
 		TransfersTotal:     prometheus.NewCounterVec(prometheus.CounterOpts{Name: "noop_transfers"}, []string{"status"}),
@@ -82,5 +95,7 @@ func NewNoop() *Metrics {
 		DBPoolConnections:  prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "noop_db_pool"}, []string{"state"}),
 		GRPCRequestsTotal:  prometheus.NewCounterVec(prometheus.CounterOpts{Name: "noop_grpc_requests"}, []string{"method", "code"}),
 		HTTPRequestsTotal:  prometheus.NewCounterVec(prometheus.CounterOpts{Name: "noop_http_requests"}, []string{"method", "path", "status"}),
+		ReconcileRuns:      prometheus.NewCounterVec(prometheus.CounterOpts{Name: "noop_reconcile_runs"}, []string{"bank_id"}),
+		ReconcileDrift:     prometheus.NewCounterVec(prometheus.CounterOpts{Name: "noop_reconcile_drift"}, []string{"bank_id", "direction"}),
 	}
 }
