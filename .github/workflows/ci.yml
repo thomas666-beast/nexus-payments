@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Download deps
+        run: go mod download
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Unit tests
+        run: go test ./internal/... ./cmd/... -race -count=1 -coverprofile=coverage.out
+
+      - name: Start services
+        run: docker compose -f deploy/docker-compose.yml up -d postgres redis migrate
+
+      - name: Wait for services
+        run: |
+          for i in $(seq 1 30); do
+            docker compose -f deploy/docker-compose.yml exec -T postgres pg_isready -U nexus -d nexus && break
+            sleep 2
+          done
+
+      - name: Integration tests
+        run: go test ./test/integration/... -race -count=1 -tags=integration
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: v1.57
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml down -v

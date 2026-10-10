@@ -1,0 +1,27 @@
+
+---
+
+## ✅ Task 1 — Definition of Done
+
+Before you push, verify:
+
+1. `make up` — Postgres and Redis start, healthchecks go green.
+2. `make test-unit` — passes (empty test suite is fine for now).
+3. `make test-integration` — passes (empty test suite is fine for now).
+4. `make build` — produces `bin/nexus`.
+5. `make lint` — passes.
+6. Push to GitHub — CI workflow goes green.
+
+## 🚦 Your Move
+
+Do this:
+
+```bash
+mkdir nexus-payments && cd nexus-payments
+git init
+# create all the files above
+go mod tidy
+make up
+make test-unit
+git add . && git commit -m "task 1: repo skeleton, docker compose, CI"
+git push

@@ -1,0 +1,25 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+    - gosec        # security scanning — critical for payments
+    - bodyclose
+    - contextcheck
+    - errorlint
+    - sqlclosecheck
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
