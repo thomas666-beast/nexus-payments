@@ -1,6 +1,7 @@
 package adapter_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -43,12 +44,13 @@ func TestRegistry_DuplicatePanics(t *testing.T) {
 }
 
 func TestMockBank_ReserveCommit(t *testing.T) {
+	ctx := context.Background()
 	bal := map[domain.AccountID]domain.Money{
 		"alice": domain.MustMoney(1000, domain.USD),
 	}
 	b := mock.NewBank("bank-a", bal)
 
-	res, err := b.Reserve(nil, adapter.ReserveRequest{
+	res, err := b.Reserve(ctx, adapter.ReserveRequest{
 		TransferID: "t1",
 		AccountID:  "alice",
 		Amount:     domain.MustMoney(100, domain.USD),
@@ -63,7 +65,7 @@ func TestMockBank_ReserveCommit(t *testing.T) {
 		t.Fatalf("reservations want 1, got %d", b.Reservations())
 	}
 
-	if err := b.Commit(nil, res); err != nil {
+	if err := b.Commit(ctx, res); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	if b.Reservations() != 0 {
@@ -75,12 +77,13 @@ func TestMockBank_ReserveCommit(t *testing.T) {
 }
 
 func TestMockBank_ReserveRollback(t *testing.T) {
+	ctx := context.Background()
 	bal := map[domain.AccountID]domain.Money{
 		"alice": domain.MustMoney(1000, domain.USD),
 	}
 	b := mock.NewBank("bank-a", bal)
 
-	res, err := b.Reserve(nil, adapter.ReserveRequest{
+	res, err := b.Reserve(ctx, adapter.ReserveRequest{
 		TransferID: "t1",
 		AccountID:  "alice",
 		Amount:     domain.MustMoney(100, domain.USD),
@@ -89,7 +92,7 @@ func TestMockBank_ReserveRollback(t *testing.T) {
 		t.Fatalf("reserve: %v", err)
 	}
 
-	if err := b.Rollback(nil, res); err != nil {
+	if err := b.Rollback(ctx, res); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	if b.Balance("alice").Amount != 1000 {
@@ -101,12 +104,13 @@ func TestMockBank_ReserveRollback(t *testing.T) {
 }
 
 func TestMockBank_InsufficientBankBalance(t *testing.T) {
+	ctx := context.Background()
 	bal := map[domain.AccountID]domain.Money{
 		"alice": domain.MustMoney(50, domain.USD),
 	}
 	b := mock.NewBank("bank-a", bal)
 
-	_, err := b.Reserve(nil, adapter.ReserveRequest{
+	_, err := b.Reserve(ctx, adapter.ReserveRequest{
 		TransferID: "t1",
 		AccountID:  "alice",
 		Amount:     domain.MustMoney(100, domain.USD),
