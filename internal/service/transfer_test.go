@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/thomas666-beast/nexus-payments/internal/adapter"
+	"github.com/thomas666-beast/nexus-payments/internal/adapter/mock"
 	"github.com/thomas666-beast/nexus-payments/internal/domain"
 	"github.com/thomas666-beast/nexus-payments/internal/ledger"
 	"github.com/thomas666-beast/nexus-payments/internal/service"
@@ -21,11 +23,35 @@ func setup(t *testing.T) (*service.Service, *store.DB, *pgxpool.Pool) {
 	db := &store.DB{Pool: pool}
 	ensureSystemAccount(t, db)
 	eng := ledger.New(nil)
-	svc := service.New(db, eng, service.DefaultConfig(), nil)
+	reg := adapter.NewRegistry()
+	svc := service.New(db, eng, reg, service.DefaultConfig(), nil, nil)
 	return svc, db, pool
 }
 
-// seedActiveAccount inserts an ACTIVE account with zero starting balance.
+// setupWithBanks returns a service whose registry has adapters for the
+// given bank IDs, each funded with the given balance for alice and bob.
+func setupWithBanks(t *testing.T, bankIDs []string, aliceBalance int64) (*service.Service, *store.DB, *pgxpool.Pool, map[string]*mock.Bank) {
+	t.Helper()
+	pool := newPool(t)
+	truncate(t, pool)
+	db := &store.DB{Pool: pool}
+	ensureSystemAccount(t, db)
+	eng := ledger.New(nil)
+	reg := adapter.NewRegistry()
+	banks := make(map[string]*mock.Bank, len(bankIDs))
+	for _, id := range bankIDs {
+		b := mock.NewBank(id, map[domain.AccountID]domain.Money{
+			"alice": domain.MustMoney(aliceBalance, domain.USD),
+			"bob":   domain.MustMoney(aliceBalance, domain.USD),
+		})
+		reg.Register(b)
+		banks[id] = b
+	}
+	svc := service.New(db, eng, reg, service.DefaultConfig(), nil, nil)
+	return svc, db, pool, banks
+}
+
+// seedActiveAccount inserts an ACTIVE account at the default test bank.
 func seedActiveAccount(t *testing.T, db *store.DB, id domain.AccountID, cur domain.Currency) {
 	t.Helper()
 	now := time.Now().UTC()
@@ -46,8 +72,29 @@ func seedActiveAccount(t *testing.T, db *store.DB, id domain.AccountID, cur doma
 	}
 }
 
+// seedAccountWithBank is like seedActiveAccount but assigns a specific bank.
+func seedAccountWithBank(t *testing.T, db *store.DB, id domain.AccountID, bankID string, cur domain.Currency) {
+	t.Helper()
+	now := time.Now().UTC()
+	err := db.WithTx(context.Background(), func(ctx context.Context, tx pgx.Tx) error {
+		return store.NewAccountRepo(db).Insert(ctx, tx, domain.Account{
+			ID:          id,
+			BankID:      bankID,
+			ExternalRef: string(id),
+			Currency:    cur,
+			Holder:      string(id),
+			Status:      domain.AccountStatusActive,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		})
+	})
+	if err != nil {
+		t.Fatalf("seed account %s: %v", id, err)
+	}
+}
+
 // ensureSystemAccount creates a synthetic genesis account used only by test
-// fixtures. Real transfers never reference it.
+// fixtures.
 func ensureSystemAccount(t *testing.T, db *store.DB) {
 	t.Helper()
 	now := time.Now().UTC()
@@ -69,8 +116,7 @@ func ensureSystemAccount(t *testing.T, db *store.DB) {
 }
 
 // fundAccount seeds a starting balance by inserting a synthetic transfer and
-// a matching CREDIT ledger entry. This is test setup, not a real transfer —
-// it deliberately bypasses the service to inject history.
+// a matching CREDIT ledger entry.
 func fundAccount(t *testing.T, pool *pgxpool.Pool, id domain.AccountID, amount int64, cur domain.Currency) {
 	t.Helper()
 	ctx := context.Background()
@@ -233,15 +279,11 @@ func TestExecute_ConcurrentTransfers_NoDoubleSpend(t *testing.T) {
 		}
 	}
 
-	// Invariant: money spent from alice must never exceed the starting balance.
-	// The number of successes can vary (10 to 20 depending on scheduling and
-	// retry outcomes), but the sum of debited amounts must be ≤ 1000.
 	if success+failed+exhausted != N {
 		t.Fatalf("accounting mismatch: success=%d failed=%d exhausted=%d total=%d",
 			success, failed, exhausted, N)
 	}
 
-	// Check the ledger directly: total money debited from alice must be ≤ 1000.
 	var totalDebited int64
 	if err := pool.QueryRow(ctx, `
 		SELECT COALESCE(-SUM(amount_minor), 0) FROM ledger_entries
@@ -256,7 +298,6 @@ func TestExecute_ConcurrentTransfers_NoDoubleSpend(t *testing.T) {
 		t.Fatalf("debited total (%d) != success count * 100 (%d)", totalDebited, success*100)
 	}
 
-	// Settled transfers from alice must equal successes.
 	var settled int
 	if err := pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM transfers WHERE status = 'SETTLED' AND from_account = 'alice'`,

@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package bank.v1;
+
+option go_package = "github.com/thomas666-beast/nexus-payments/gen/bank/v1;bankv1";
+
+service Bank {
+  rpc Reserve(ReserveRequest) returns (ReserveResponse);
+  rpc Commit(CommitRequest) returns (CommitResponse);
+  rpc Rollback(RollbackRequest) returns (RollbackResponse);
+  rpc Reconcile(ReconcileRequest) returns (ReconcileResponse);
+
+  // Admin / introspection endpoints
+  rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse);
+  rpc CreateAccount(CreateAccountRequest) returns (CreateAccountResponse);
+}
+
+message Money {
+  int64  amount_minor = 1;
+  string currency     = 2;
+}
+
+message ReserveRequest {
+  string transfer_id = 1;
+  string account_id  = 2;
+  Money  amount      = 3;
+  int64  expires_at_unix = 4;
+}
+
+message ReserveResponse {
+  string reservation_id = 1;
+  string bank_id        = 2;
+}
+
+message CommitRequest {
+  string reservation_id = 1;
+}
+
+message CommitResponse {}
+
+message RollbackRequest {
+  string reservation_id = 1;
+}
+
+message RollbackResponse {}
+
+message ReconcileRequest {
+  int64 from_unix = 1;
+  int64 to_unix   = 2;
+}
+
+message ReconcileResponse {
+  repeated string transfer_ids = 1;
+}
+
+message GetBalanceRequest {
+  string account_id = 1;
+}
+
+message GetBalanceResponse {
+  Money balance = 1;
+}
+
+message CreateAccountRequest {
+  string account_id = 1;
+  Money  opening_balance = 2;
+}
+
+message CreateAccountResponse {}

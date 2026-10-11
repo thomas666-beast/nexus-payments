@@ -46,3 +46,14 @@ migrate-down:
 clean:
 	docker compose -f deploy/docker-compose.yml down -v
 	rm -rf bin/
+
+.PHONY: banks-up banks-down banks-logs
+
+banks-up:
+	docker compose -f deploy/docker-compose.yml up -d bank-a bank-b
+
+banks-down:
+	docker compose -f deploy/docker-compose.yml stop bank-a bank-b
+
+banks-logs:
+	docker compose -f deploy/docker-compose.yml logs -f bank-a bank-b

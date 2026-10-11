@@ -23,7 +23,7 @@ func startServer(t *testing.T) (nexusv1.NexusClient, func()) {
 	db := &store.DB{Pool: pool}
 	ensureSystemAccount(t, db)
 	reg := adapter.NewRegistry()
-	svc := service.New(db, ledger.New(nil), reg, service.DefaultConfig(), nil)
+	svc := service.New(db, ledger.New(nil), reg, service.DefaultConfig(), nil, nil)
 	srv := grpcserver.NewServer(svc)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")

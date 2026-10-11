@@ -4,13 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 
 	"github.com/thomas666-beast/nexus-payments/internal/domain"
 )
 
 // canonicalRequest is the deterministic shape we hash for idempotency.
-// Deliberately excludes Reason — a caller adding a note should not
-// create a new logical transfer.
 type canonicalRequest struct {
 	FromAccount domain.AccountID `json:"from_account"`
 	ToAccount   domain.AccountID `json:"to_account"`
@@ -35,7 +34,6 @@ func hashRequest(req ExecuteRequest) (string, error) {
 }
 
 // storedResult is the serialized form of a successful ExecuteResult.
-// Kept separate from ExecuteResult so we control the wire format.
 type storedResult struct {
 	TransferID  domain.TransferID `json:"transfer_id"`
 	FromAccount domain.AccountID  `json:"from_account"`
@@ -44,6 +42,11 @@ type storedResult struct {
 	Currency    domain.Currency   `json:"currency"`
 	Status      string            `json:"status"`
 	EntryIDs    []domain.EntryID  `json:"entry_ids"`
+}
+
+// storedError is the serialized form of a business failure.
+type storedError struct {
+	Message string `json:"message"`
 }
 
 func encodeResult(r ExecuteResult) ([]byte, error) {
@@ -61,11 +64,26 @@ func encodeResult(r ExecuteResult) ([]byte, error) {
 	return json.Marshal(sr)
 }
 
-// storedError is the serialized form of a business failure.
-type storedError struct {
-	Message string `json:"message"`
-}
-
 func encodeError(err error) ([]byte, error) {
 	return json.Marshal(storedError{Message: err.Error()})
+}
+
+func decodeResult(body []byte) (ExecuteResult, error) {
+	var sr storedResult
+	if err := json.Unmarshal(body, &sr); err != nil {
+		return ExecuteResult{}, fmt.Errorf("decode stored result: %w", err)
+	}
+	res := ExecuteResult{
+		Transfer: domain.Transfer{
+			ID:          sr.TransferID,
+			FromAccount: sr.FromAccount,
+			ToAccount:   sr.ToAccount,
+			Amount:      domain.Money{Amount: sr.AmountMinor, Currency: sr.Currency},
+			Status:      domain.TransferStatus(sr.Status),
+		},
+	}
+	for _, id := range sr.EntryIDs {
+		res.Entries = append(res.Entries, domain.LedgerEntry{ID: id})
+	}
+	return res, nil
 }

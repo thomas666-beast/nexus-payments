@@ -24,6 +24,10 @@ import (
 	restserver "github.com/thomas666-beast/nexus-payments/internal/transport/rest"
 	"google.golang.org/grpc"
 	"github.com/thomas666-beast/nexus-payments/internal/platform/ratelimit"
+	"github.com/thomas666-beast/nexus-payments/internal/adapter/breaker"
+	"github.com/thomas666-beast/nexus-payments/internal/adapter/grpcadapter"
+	"github.com/thomas666-beast/nexus-payments/internal/platform/bankconfig"
+	"google.golang.org/grpc/reflection"
 )
 
 func main() {
@@ -56,6 +60,29 @@ func run() error {
 	m := metrics.New(nil)
 	eng := ledger.New(nil)
 	reg := adapter.NewRegistry()
+
+	// Dial each configured bank, wrap in a circuit breaker, register.
+	banks, err := bankconfig.ParseEnv()
+	if err != nil {
+		return fmt.Errorf("parse banks: %w", err)
+	}
+	var bankClients []*grpcadapter.Client
+	for _, b := range banks {
+		client, err := grpcadapter.Dial(b.ID, b.Addr)
+		if err != nil {
+			return fmt.Errorf("dial bank %s at %s: %w", b.ID, b.Addr, err)
+		}
+		bankClients = append(bankClients, client)
+		wrapped := breaker.New(client, breaker.DefaultSettings())
+		reg.Register(wrapped)
+		log.Info("registered bank adapter", "bank_id", b.ID, "addr", b.Addr)
+	}
+	defer func() {
+		for _, c := range bankClients {
+			_ = c.Close()
+		}
+	}()
+
 	svc := service.New(db, eng, reg, service.DefaultConfig(), log, m)
 
 	reaper := service.NewReaper(db, service.DefaultReaperConfig(), log)
@@ -73,6 +100,7 @@ func run() error {
 		grpc.UnaryInterceptor(ratelimit.UnaryServerInterceptor(globalLimiter)),
 	)
 	nexusv1.RegisterNexusServer(grpcSrv, grpcserver.NewServer(svc))
+	reflection.Register(grpcSrv)
 
 	// HTTP server (REST + health)
 	httpMux := http.NewServeMux()
